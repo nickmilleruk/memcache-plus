@@ -40,6 +40,58 @@ describe('Client', function() {
             });
         });
 
+        it('has a disconnect method', function(done) {
+            var cache = new Client();
+            cache.should.have.property('disconnect');
+            cache.disconnect.should.be.a('function');
+            _.sample(cache.connections).client.on('connect', function() {
+                cache.disconnect()
+                     .then(function() {
+                         cache.connections.should.be.an('object');
+                         _.keys(cache.connections).should.have.length(0);
+                     })
+                     .then(done);
+            });
+        });
+
+        it('can disconnect from a specific client with string', function(done) {
+            var cache = new Client({ hosts: ['localhost:11211', '127.0.0.1:11211'] });
+            cache.should.have.property('disconnect');
+            cache.disconnect.should.be.a('function');
+            cache.disconnect('127.0.0.1:11211')
+                 .then(function() {
+                     cache.connections.should.be.an('object');
+                     _.keys(cache.connections).should.have.length(1);
+                     cache.hosts.should.have.length(1);
+                     _.keys(cache.connections)[0].should.equal('localhost:11211');
+                     cache.hosts[0].should.equal('localhost:11211');
+                 })
+                 .then(done);
+        });
+
+        it('can disconnect from a specific client with array', function(done) {
+            var cache = new Client({ hosts: ['localhost:11211', '127.0.0.1:11211'] });
+            cache.should.have.property('disconnect');
+            cache.disconnect.should.be.a('function');
+            cache.disconnect(['127.0.0.1:11211'])
+                 .then(function() {
+                     cache.connections.should.be.an('object');
+                     _.keys(cache.connections).should.have.length(1);
+                     _.keys(cache.connections)[0].should.equal('localhost:11211');
+                 })
+                 .then(done);
+        });
+
+        it('throws an error if attempting to disconnect from a bogus host', function() {
+            var cache = new Client({
+                hosts: ['localhost:11211', '127.0.0.1:11211'],
+                onNetError: function() {}
+            });
+            cache.should.have.property('disconnect');
+            cache.disconnect.should.be.a('function');
+            expect(function() { cache.disconnect(['badserver:11211']); }).to.throw('Cannot disconnect from server unless connected');
+        });
+
         it('has a dictionary of connections', function() {
             var cache = new Client();
             cache.should.have.property('hosts');
@@ -67,25 +119,51 @@ describe('Client', function() {
         /**
          * Only comment this out when we have an Elasticache autodiscovery cluster to test against.
          *   Ideally one day this can be mocked, but for now just selectively enabling it
-        it('supports autodiscovery', function(done) {
-            var cache = new Client({ hosts: ['victor.di6cba.cfg.use1.cache.amazonaws.com'], autodiscover: true });
+        it('supports autodiscovery', function() {
+            var cache = new Client({ hosts: ['test-memcache.di6cba.cfg.use1.cache.amazonaws.com'], autodiscover: true });
             var val = chance.word();
 
-            cache.set('test', val)
+            return cache.set('test', val)
                 .then(function() {
                     return cache.get('test');
                 })
                 .then(function(v) {
                     val.should.equal(v);
-                    done();
                 });
         });
         */
+
+        it('throws on autodiscovery failure', function() {
+            var cache = new Client({
+                hosts: ['badserver:11211'],
+                autodiscover: true,
+                onNetError: function() {}
+            });
+            var val = chance.word();
+
+            return cache.set('test', val)
+                .then(function() { throw new Error('should not get here'); })
+                .catch(function(err) {
+                    err.should.be.ok;
+                    err.should.be.an.instanceof(Error);
+                    err.message.should.match(/Autodiscovery failed/);
+                })
+                .then(function() {
+                    // try again to ensure that subsequent ops also fail
+                    return cache.set('test', val);
+                })
+                .then(function() { throw new Error('should not get here'); })
+                .catch(function(err) {
+                    err.should.be.ok;
+                    err.should.be.an.instanceof(Error);
+                    err.message.should.match(/Autodiscovery failed/);
+                });
+        });
     });
 
     describe('set and get', function() {
         var cache;
-        before(function() {
+        beforeEach(function() {
             cache = new Client();
         });
 
@@ -95,7 +173,7 @@ describe('Client', function() {
 
         describe('should throw an error if called', function() {
             it('without a key', function() {
-                expect(function() { cache.set(); }).to.throw('Cannot set without key!');
+                expect(function() { cache.set(); }).to.throw('AssertionError: Cannot "set" without key!');
             });
 
             it('with a key that is too long', function() {
@@ -103,14 +181,26 @@ describe('Client', function() {
             });
 
             it('with a non-string key', function() {
-                expect(function() { cache.set({blah: 'test'}, 'val'); }).to.throw('not string key');
-                expect(function() { cache.set([1, 2], 'val'); }).to.throw('not string key');
-                expect(function() { cache.set(_.noop, 'val'); }).to.throw('not string key');
+                expect(function() { cache.set({blah: 'test'}, 'val'); }).to.throw('AssertionError: Key needs to be of type "string"');
+                expect(function() { cache.set([1, 2], 'val'); }).to.throw('AssertionError: Key needs to be of type "string"');
+                expect(function() { cache.set(_.noop, 'val'); }).to.throw('AssertionError: Key needs to be of type "string"');
             });
         });
 
         it('should work', function() {
             var key = getKey(), val = chance.word();
+
+            return cache.set(key, val)
+                        .then(function() {
+                            return cache.get(key);
+                        })
+                        .then(function(v) {
+                            val.should.equal(v);
+                        });
+        });
+
+        it.skip('works with values with newlines', function() {
+            var key = getKey(), val = 'value\nwith newline';
 
             return cache.set(key, val)
                 .then(function() {
@@ -120,7 +210,7 @@ describe('Client', function() {
                     val.should.equal(v);
                 });
         });
-
+    
         it('works with very large values', function() {
             var key = getKey(), val = chance.word({ length: 1000000 });
 
@@ -142,7 +232,7 @@ describe('Client', function() {
             it('works of its own accord', function() {
                 var val = chance.word({ length: 1000 });
 
-                return misc.compress(new Buffer(val))
+                return misc.compress(Buffer.from(val))
                     .then(function(v) {
                         return misc.decompress(v);
                     })
@@ -151,28 +241,28 @@ describe('Client', function() {
                     });
             });
 
-            it('set works with compression', function() {
-                var key = getKey(), val = chance.word({ length: 1000 });
-
-                return cache.set(key, val, { compressed: true })
-                    .then(function() {
-                        return cache.get(key);
-                    })
-                    .then(function(v) {
-                        expect(val.length).to.be.above(v.length);
-                    });
-            });
-
             it('get works with compression', function() {
                 var key = getKey(), val = chance.word({ length: 1000 });
 
                 return cache.set(key, val, { compressed: true })
-                    .then(function() {
-                        return cache.get(key, { compressed: true });
-                    })
-                    .then(function(v) {
-                        val.should.equal(v);
-                    });
+                            .then(function() {
+                                return cache.get(key, { compressed: true });
+                            })
+                            .then(function(v) {
+                                val.should.equal(v);
+                            });
+            });
+
+            it('get works with compression without explicit get compressed flag', function() {
+                var key = getKey(), val = chance.word({ length: 1000 });
+
+                return cache.set(key, val, { compressed: true })
+                            .then(function() {
+                                return cache.get(key);
+                            })
+                            .then(function(v) {
+                                val.should.equal(v);
+                            });
             });
 
             it('getMulti works with compression', function() {
@@ -190,7 +280,7 @@ describe('Client', function() {
                     });
             });
 
-            it('get works with a callback', function(done) {
+            it.skip('get works with a callback', function(done) {
                 var key = getKey(), val = chance.word({ length: 1000 });
 
                 return cache.set(key, val, { compressed: true })
@@ -206,19 +296,96 @@ describe('Client', function() {
                 var key = getKey(), val = chance.word({ length: 1000 });
 
                 return cache.set(key, val)
-                    .then(function() {
-                        return cache.get(key, { compressed: true });
-                    })
-                    .then(function(v) {
-                        expect(v).to.be.null;
-                    });
+                            .then(function() {
+                                return cache.get(key, { compressed: true });
+                            })
+                            .then(function(v) {
+                                expect(v).to.be.null;
+                            });
             });
         });
 
-        it('throws error when setting a value number', function() {
+        it('does not throw an error when setting a value number', function() {
             var key = chance.guid(), val = chance.natural();
 
-            expect(function() { cache.set(key, val); }).to.throw('not string value');
+            expect(function() { cache.set(key, val); }).to.not.throw();
+        });
+
+        it('get for val set as number returns number', function() {
+            var key = getKey(), val = chance.integer();
+
+            return cache.set(key, val)
+                        .then(function() {
+                            return cache.get(key);
+                        })
+                        .then(function(v) {
+                            expect(v).to.be.a('number');
+                            v.should.equal(val);
+                        });
+        });
+
+        it('get for val set as floating number returns number', function() {
+            var key = getKey(), val = chance.floating();
+
+            return cache.set(key, val)
+                        .then(function() {
+                            return cache.get(key);
+                        })
+                        .then(function(v) {
+                            expect(v).to.be.a.number;
+                            v.should.equal(val);
+                        });
+        });
+
+        it('get for val set as object returns object', function() {
+            var key = getKey(), val = { num: chance.integer() };
+
+            return cache.set(key, val)
+                        .then(function() {
+                            return cache.get(key);
+                        })
+                        .then(function(v) {
+                            expect(v).to.be.an.object;
+                            (v.num).should.equal(val.num);
+                        });
+        });
+
+        it('get for val set as Buffer returns Buffer', function() {
+            var key = getKey(), val = Buffer.from('blah blah test');
+
+            return cache.set(key, val)
+                        .then(function() {
+                            return cache.get(key);
+                        })
+                        .then(function(v) {
+                            expect(v).to.be.an.instanceof(Buffer);
+                            (v.toString()).should.equal(val.toString());
+                        });
+        });
+
+        it('get for val set as null returns null', function() {
+            var key = getKey(), val = null;
+
+            return cache.set(key, val)
+                        .then(function() {
+                            return cache.get(key);
+                        })
+                        .then(function(v) {
+                            expect(v).to.be.null;
+                        });
+        });
+
+        it('get for val set as array returns array', function() {
+            var key = getKey(), val = [ chance.integer(), chance.integer() ];
+
+            return cache.set(key, val)
+                        .then(function() {
+                            return cache.get(key);
+                        })
+                        .then(function(v) {
+                            expect(v).to.be.an.array;
+                            expect(v).to.deep.equal(val);
+                        });
         });
 
         it('throws error with enormous values (over memcache limit)', function() {
@@ -300,7 +467,7 @@ describe('Client', function() {
             var key = getKey(), key1 = getKey(), key2 = getKey(), key3 = getKey(),
                 val1 = chance.word(), val2 = chance.word(), val3 = chance.word();
 
-            
+
             return cache.set(key, val1)
                 .then(function() {
                     return Promise.all([
@@ -448,10 +615,96 @@ describe('Client', function() {
             });
         });
     });
+
+    describe('cas and gets', function() {
+        var cache;
+        beforeEach(function() {
+            cache = new Client();
+        });
+
+        it('exists', function() {
+            cache.should.have.property('gets');
+        });
+
+        it('should return a cas value', function() {
+            var key = getKey(), val = chance.word();
+
+            return cache.set(key, val)
+                        .then(function() {
+                            return cache.gets(key);
+                        })
+                        .spread(function(v, cas) {
+                            val.should.equal(v);
+                            expect(cas).to.exist;
+                        });
+        });
+
+        it('should store new value when given a matching cas', function() {
+            var key = getKey(), val = chance.word(), updatedVal = chance.word();
+
+            return cache.set(key, val)
+                        .then(function() {
+                            return cache.gets(key);
+                        })
+                        .spread(function(v, cas) {
+                            return cache.cas(key, updatedVal, cas);
+
+                        }).then(function(success) {
+                            expect(success).to.be.true;
+
+                            return cache.get(key);
+
+                        }).then(function(v) {
+                            expect(v).to.equal(updatedVal);
+
+                        });
+        });
+
+        it('should not store the new value when given an invalid cas value', function() {
+            var key = getKey(), val = chance.word(), updatedVal = chance.word();
+
+            return cache.set(key, val)
+                        .then(function() {
+                            return cache.gets(key);
+                        })
+                        .spread(function(v, cas) {
+                            var invalidCas;
+                            
+                            do {
+                              invalidCas = chance.string({pool: '0123456789', length: 15});
+                            } while (invalidCas === cas);
+
+                            return cache.cas(key, updatedVal, invalidCas);
+
+                        }).then(function(success) {
+                            expect(success).to.be.false;
+
+                        });
+        });
+
+        it('should not store a value when given an invalid key value', function() {
+            var key = getKey(), invalidKey = getKey(),
+                val = chance.word(), updatedVal = chance.word();
+
+            return cache.set(key, val)
+                        .then(function() {
+                            return cache.gets(key);
+                        })
+                        .spread(function(v, cas) {
+                            
+                            return cache.cas(invalidKey, updatedVal, cas);
+
+                        }).then(function(success) {
+                            expect(success).to.be.false;
+
+                        });
+        });
+    });
+
     // @todo should have cleanup jobs to delete keys we set in memcache
     describe('delete', function() {
         var cache;
-        before(function() {
+        beforeEach(function() {
             cache = new Client();
         });
 
@@ -477,14 +730,13 @@ describe('Client', function() {
 
         it('does not blow up if deleting key that does not exist', function() {
             var key = chance.guid();
-
             return cache.delete(key);
         });
     });
 
     describe('deleteMulti', function() {
         var cache;
-        before(function() {
+        beforeEach(function() {
             cache = new Client();
         });
 
@@ -512,6 +764,18 @@ describe('Client', function() {
                     return;
                 });
         });
+    });
+
+    // @todo these are placeholders for now until I can figure out a good way
+    // to adequeately test these.
+    describe('Client buffer', function() {
+        it('works');
+        it('can be flushed');
+    });
+
+    describe('Connection buffer', function() {
+        it('works');
+        it('can be flushed');
     });
 
     describe('Helpers', function() {
@@ -572,11 +836,477 @@ describe('Client', function() {
         });
     });
 
+    describe('incr', function() {
+        var cache;
+        beforeEach(function() {
+            cache = new Client();
+        });
+
+        it('exists', function() {
+            cache.should.have.property('incr');
+        });
+
+        describe('should throw an error if called', function() {
+            it('without a key', function() {
+                expect(function() { cache.incr(); }).to.throw('AssertionError: Cannot "incr" without key!');
+            });
+
+            it('with a key that is too long', function() {
+                expect(function() { cache.incr(chance.string({length: 251})); }).to.throw('less than 250 characters');
+            });
+
+            it('with a non-string key', function() {
+                expect(function() { cache.incr({blah: 'test'}); }).to.throw('AssertionError: Key needs to be of type "string"');
+                expect(function() { cache.incr([1, 2]); }).to.throw('AssertionError: Key needs to be of type "string"');
+                expect(function() { cache.incr(_.noop); }).to.throw('AssertionError: Key needs to be of type "string"');
+            });
+
+            it('with a val that is not a number', function() {
+                expect(function() { cache.incr(chance.string(), chance.word()); }).to.throw('AssertionError: Cannot incr in memcache with a non number value');
+            });
+        });
+
+        describe('should work', function() {
+            it('without an increment value', function() {
+                var key = getKey(), val = chance.natural();
+
+                return cache.set(key, val)
+                            .then(function() {
+                                return cache.incr(key);
+                            })
+                            .then(function(v) {
+                                v.should.equal(val + 1);
+                            });
+            });
+
+            it('with an increment value', function() {
+                var key = getKey(), val = chance.natural({ max: 20000000}), incr = chance.natural({ max: 1000 });
+                return cache.set(key, val)
+                            .then(function() {
+                                return cache.incr(key, incr);
+                            })
+                            .then(function(v) {
+                                v.should.equal(val + incr);
+                            });
+            });
+        });
+    });
+
+    describe('decr', function() {
+        var cache;
+        beforeEach(function() {
+            cache = new Client();
+        });
+
+        it('exists', function() {
+            cache.should.have.property('decr');
+        });
+
+        describe('should throw an error if called', function() {
+            it('without a key', function() {
+                expect(function() { cache.decr(); }).to.throw('AssertionError: Cannot "decr" without key!');
+            });
+
+            it('with a key that is too long', function() {
+                expect(function() { cache.decr(chance.string({length: 251})); }).to.throw('less than 250 characters');
+            });
+
+            it('with a non-string key', function() {
+                expect(function() { cache.decr({blah: 'test'}); }).to.throw('AssertionError: Key needs to be of type "string"');
+                expect(function() { cache.decr([1, 2]); }).to.throw('AssertionError: Key needs to be of type "string"');
+                expect(function() { cache.decr(_.noop); }).to.throw('AssertionError: Key needs to be of type "string"');
+            });
+
+            it('with a val that is not a number', function() {
+                expect(function() { cache.decr(chance.string(), chance.word()); }).to.throw('AssertionError: Cannot decr in memcache with a non number value');
+            });
+        });
+
+        describe('should work', function() {
+            it('without a decrement value', function() {
+                var key = getKey(), val = chance.natural();
+
+                return cache.set(key, val)
+                            .then(function() {
+                                return cache.decr(key);
+                            })
+                            .then(function(v) {
+                                v.should.equal(val - 1);
+                            });
+            });
+
+            it('with a decrement value', function() {
+                var key = getKey(), val = chance.natural({ max: 20000000}), decr = chance.natural({ max: 1000 });
+                return cache.set(key, val)
+                            .then(function() {
+                                return cache.decr(key, decr);
+                            })
+                            .then(function(v) {
+                                v.should.equal(val - decr);
+                            });
+            });
+        });
+    });
+
+    describe('flush', function() {
+        var cache;
+        beforeEach(function() {
+            cache = new Client();
+        });
+
+        it('exists', function() {
+            cache.should.have.property('flush');
+        });
+
+        describe('should work', function() {
+            it('removes all data', function () {
+                var key = getKey(), val = chance.natural();
+
+                return cache.set(key, val)
+                     .then(function() {
+                         return cache.get(key);
+                     })
+                     .then(function(v) {
+                         expect(v).to.equal(val);
+                         return cache.flush();
+                     })
+                     .then(function () {
+                         return cache.get(key);
+                     })
+                     .then(function (v) {
+                         expect(v).to.equal(null);
+                     });
+            });
+
+            it('removes all data after a specified seconds', function () {
+                var key = getKey(), val = chance.natural();
+
+                return cache.set(key, val)
+                     .then(function() {
+                         return cache.get(key);
+                     })
+                     .then(function(v) {
+                         expect(v).to.equal(val);
+                         return cache.flush(1);
+                     })
+                     .then(function () {
+                         return cache.get(key);
+                     })
+                     .then(function (v) {
+                         expect(v).to.equal(v);
+                     })
+                     .delay(1001)
+                     .then(function() {
+                         return cache.get(key);
+                     })
+                     .then(function (v) {
+                         expect(v).to.equal(null);
+                     });
+            });
+        });
+    });
+
+    describe('add', function() {
+        var cache;
+        beforeEach(function() {
+            cache = new Client();
+        });
+
+        it('exists', function() {
+            cache.should.have.property('add');
+        });
+
+        describe('should throw an error if called', function() {
+            it('without a key', function() {
+                expect(function() { cache.add(); }).to.throw('AssertionError: Cannot "add" without key!');
+            });
+
+            it('with a key that is too long', function() {
+                expect(function() { cache.add(chance.string({length: 251})); }).to.throw('less than 250 characters');
+            });
+
+            it('with a non-string key', function() {
+                expect(function() { cache.add({blah: 'test'}); }).to.throw('AssertionError: Key needs to be of type "string"');
+                expect(function() { cache.add([1, 2]); }).to.throw('AssertionError: Key needs to be of type "string"');
+                expect(function() { cache.add(_.noop); }).to.throw('AssertionError: Key needs to be of type "string"');
+            });
+        });
+
+        describe('should work', function() {
+            it('with a brand new key', function() {
+                var key = getKey(), val = chance.natural();
+
+                return cache.add(key, val)
+                            .then(function() {
+                                return cache.get(key);
+                            })
+                            .then(function(v) {
+                                v.should.equal(val);
+                            });
+            });
+
+            it('should behave properly when add over existing key', function() {
+                var key = getKey(), val = chance.natural();
+
+                return cache.add(key, val)
+                            .then(function() {
+                                return cache.add(key, val);
+                            })
+                            .catch(function(err) {
+                                expect(err.toString()).to.contain('it already exists');
+                            });
+            });
+        });
+    });
+
+    describe('replace', function() {
+        var cache;
+        beforeEach(function() {
+            cache = new Client();
+        });
+
+        it('exists', function() {
+            cache.should.have.property('replace');
+        });
+
+        describe('should throw an error if called', function() {
+            it('without a key', function() {
+                expect(function() { cache.replace(); }).to.throw('AssertionError: Cannot "replace" without key!');
+            });
+
+            it('with a key that is too long', function() {
+                expect(function() { cache.replace(chance.string({length: 251})); }).to.throw('less than 250 characters');
+            });
+
+            it('with a non-string key', function() {
+                expect(function() { cache.replace({blah: 'test'}); }).to.throw('AssertionError: Key needs to be of type "string"');
+                expect(function() { cache.replace([1, 2]); }).to.throw('AssertionError: Key needs to be of type "string"');
+                expect(function() { cache.replace(_.noop); }).to.throw('AssertionError: Key needs to be of type "string"');
+            });
+        });
+
+        describe('should work', function() {
+            it('as normal', function() {
+                var key = getKey(), val = chance.natural(), val2 = chance.natural();
+
+                return cache.set(key, val)
+                            .then(function() {
+                                return cache.replace(key, val2);
+                            })
+                            .then(function() {
+                                return cache.get(key);
+                            })
+                            .then(function(v) {
+                                v.should.equal(val2);
+                            });
+            });
+
+            it('should behave properly when replace over non-existent key', function() {
+                var key = getKey(), val = chance.natural();
+
+                return cache.replace(key, val)
+                            .catch(function(err) {
+                                expect(err.toString()).to.contain('does not exist');
+                            });
+            });
+        });
+    });
+
+    describe('append', function() {
+        var cache;
+        beforeEach(function() {
+            cache = new Client();
+        });
+
+        it('exists', function() {
+            cache.should.have.property('append');
+        });
+
+        describe('should throw an error if called', function() {
+            it('without a key', function() {
+                expect(function() { cache.append(); }).to.throw('AssertionError: Cannot "append" without key!');
+            });
+
+            it('with a key that is too long', function() {
+                expect(function() { cache.append(chance.string({length: 251})); }).to.throw('less than 250 characters');
+            });
+
+            it('with a non-string key', function() {
+                expect(function() { cache.append({blah: 'test'}); }).to.throw('AssertionError: Key needs to be of type "string"');
+                expect(function() { cache.append([1, 2]); }).to.throw('AssertionError: Key needs to be of type "string"');
+                expect(function() { cache.append(_.noop); }).to.throw('AssertionError: Key needs to be of type "string"');
+            });
+        });
+
+        describe('should work', function() {
+            it('as normal', function() {
+                var key = getKey(), val = chance.string(), val2 = chance.string();
+
+                return cache.set(key, val)
+                            .then(function() {
+                                return cache.append(key, val2);
+                            })
+                            .then(function() {
+                                return cache.get(key);
+                            })
+                            .then(function(v) {
+                                v.should.equal(val + val2);
+                            });
+            });
+
+            it('should behave properly when append over non-existent key', function() {
+                var key = getKey(), val = chance.natural();
+
+                return cache.append(key, val)
+                            .catch(function(err) {
+                                expect(err.toString()).to.contain('does not exist');
+                            });
+            });
+        });
+    });
+
+    describe('prepend', function() {
+        var cache;
+        beforeEach(function() {
+            cache = new Client();
+        });
+
+        it('exists', function() {
+            cache.should.have.property('prepend');
+        });
+
+        describe('should throw an error if called', function() {
+            it('without a key', function() {
+                expect(function() { cache.prepend(); }).to.throw('AssertionError: Cannot "prepend" without key!');
+            });
+
+            it('with a key that is too long', function() {
+                expect(function() { cache.prepend(chance.string({length: 251})); }).to.throw('less than 250 characters');
+            });
+
+            it('with a non-string key', function() {
+                expect(function() { cache.prepend({blah: 'test'}); }).to.throw('AssertionError: Key needs to be of type "string"');
+                expect(function() { cache.prepend([1, 2]); }).to.throw('AssertionError: Key needs to be of type "string"');
+                expect(function() { cache.prepend(_.noop); }).to.throw('AssertionError: Key needs to be of type "string"');
+            });
+        });
+
+        describe('should work', function() {
+            it('as normal', function() {
+                var key = getKey(), val = chance.string(), val2 = chance.string();
+
+                return cache.set(key, val)
+                            .then(function() {
+                                return cache.prepend(key, val2);
+                            })
+                            .then(function() {
+                                return cache.get(key);
+                            })
+                            .then(function(v) {
+                                v.should.equal(val2 + val);
+                            });
+            });
+
+            it('should behave properly when prepend over non-existent key', function() {
+                var key = getKey(), val = chance.natural();
+
+                return cache.prepend(key, val)
+                            .catch(function(err) {
+                                expect(err.toString()).to.contain('does not exist');
+                            });
+            });
+        });
+    });
+
+    describe('items', function () {
+        var cache;
+        beforeEach(function() {
+            cache = new Client();
+        });
+
+        it('exists', function() {
+            cache.should.have.property('items');
+        });
+
+        describe('should work', function() {
+            it('gets slab stats', function (done) {
+                cache.set('test', 'test').then(function() {
+                    return cache.items();
+                }).then(function (items) {
+                    expect(items.length).to.be.above(0);
+                    expect(items[0].slab_id).to.exist;
+                    expect(items[0].server).to.exist;
+                    expect(items[0].data.number).to.exist;
+                    expect(items[0].data.age).to.exist;
+                    done();
+                });
+            });
+        });
+    });
+
+    describe('cachedump', function () {
+        var cache;
+        beforeEach(function() {
+            cache = new Client();
+        });
+
+        it('exists', function() {
+            cache.should.have.property('items');
+        });
+
+        describe('should work', function() {
+            it('gets cache metadata', function (done) {
+                var key = getKey();
+
+                // guarantee that we will at least have one result
+                cache.set(key, 'test').then(function() {
+                    return cache.items();
+                }).then(function (items) {
+                    return cache.cachedump(items[0].slab_id);
+                }).then(function (data) {
+                    expect(data[0].key).to.be.defined;
+                    done();
+                });
+            });
+
+            it('gets cache metadata with limit', function (done) {
+                var key = getKey();
+
+                cache.set(key, 'test').then(function() {
+                    return cache.items();
+                }).then(function (items) {
+                    return cache.cachedump(items[0].slab_id, 1);
+                }).then(function (data) {
+                    expect(data.length).to.equal(1);
+                    done();
+                });
+            });
+        });
+    });
+
+    describe('version', function () {
+        var cache;
+        beforeEach(function() {
+            cache = new Client();
+        });
+
+        it('exists', function() {
+            cache.should.have.property('version');
+        });
+
+        describe('should work', function() {
+            it('gets version', function () {
+                return cache.version().then(function(v) {
+                    expect(v).to.be.a.string;
+                });
+            });
+        });
+    });
+
     after(function() {
         var cache = new Client();
 
         // Clean up all of the keys we created
         return cache.deleteMulti(keys);
-    });
-
+    });    
 });
